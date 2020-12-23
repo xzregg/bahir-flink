@@ -21,11 +21,7 @@ import org.apache.flink.connectors.kudu.connector.KuduFilterInfo;
 import org.apache.flink.connectors.kudu.connector.KuduTableInfo;
 
 import org.apache.commons.collections.CollectionUtils;
-import org.apache.kudu.client.KuduClient;
-import org.apache.kudu.client.KuduScanToken;
-import org.apache.kudu.client.KuduSession;
-import org.apache.kudu.client.KuduTable;
-import org.apache.kudu.client.LocatedTablet;
+import org.apache.kudu.client.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -47,6 +43,7 @@ public class KuduReader implements AutoCloseable {
     private transient KuduSession session;
     private transient KuduTable table;
 
+
     public KuduReader(KuduTableInfo tableInfo, KuduReaderConfig readerConfig) throws IOException {
         this(tableInfo, readerConfig, new ArrayList<>(), null);
     }
@@ -64,8 +61,9 @@ public class KuduReader implements AutoCloseable {
         this.client = obtainClient();
         this.session = obtainSession();
         this.table = obtainTable();
-    }
 
+    }
+    
     private KuduClient obtainClient() {
         return new KuduClient.KuduClientBuilder(readerConfig.getMasters()).build();
     }
@@ -88,6 +86,7 @@ public class KuduReader implements AutoCloseable {
     public KuduReaderIterator scanner(byte[] token) throws IOException {
         return new KuduReaderIterator(KuduScanToken.deserializeIntoScanner(token, client));
     }
+
 
     public List<KuduScanToken> scanTokens(List<KuduFilterInfo> tableFilters, List<String> tableProjections, Integer rowLimit) {
         KuduScanToken.KuduScanTokenBuilder tokenBuilder = client.newScanTokenBuilder(table);

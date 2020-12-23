@@ -32,13 +32,26 @@ public class KuduReaderConfig implements Serializable {
 
     private final String masters;
     private final int rowLimit;
+    private final long cacheMaxSize;
+    private final long cacheExpireMs;
+
+    public long getCacheMaxSize() {
+        return cacheMaxSize;
+    }
+
+    public long getCacheExpireMs() {
+        return cacheExpireMs;
+    }
+
 
     private KuduReaderConfig(
             String masters,
-            int rowLimit) {
+            int rowLimit, long cacheMaxSize, long cacheExpireMs) {
 
         this.masters = checkNotNull(masters, "Kudu masters cannot be null");
         this.rowLimit = checkNotNull(rowLimit, "Kudu rowLimit cannot be null");
+        this.cacheMaxSize = cacheMaxSize;
+        this.cacheExpireMs = cacheExpireMs;
     }
 
     public String getMasters() {
@@ -66,6 +79,20 @@ public class KuduReaderConfig implements Serializable {
         private final String masters;
         private final int rowLimit;
 
+        private long cacheMaxSize;
+        private long cacheExpireMs;
+
+
+        public Builder setcacheMaxSize(long cacheMaxSize) {
+            this.cacheMaxSize = cacheMaxSize;
+            return this;
+        }
+
+        public Builder setcacheExpireMs(long cacheExpireMs) {
+            this.cacheExpireMs = cacheExpireMs;
+            return this;
+        }
+
         private Builder(String masters) {
             this(masters, DEFAULT_ROW_LIMIT);
         }
@@ -86,7 +113,7 @@ public class KuduReaderConfig implements Serializable {
         public KuduReaderConfig build() {
             return new KuduReaderConfig(
                     masters,
-                    rowLimit);
+                    rowLimit, cacheMaxSize, cacheExpireMs);
         }
     }
 }

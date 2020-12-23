@@ -27,8 +27,12 @@ import org.apache.flink.table.catalog.CatalogTable;
 import org.apache.flink.table.catalog.ObjectPath;
 import org.apache.flink.table.descriptors.DescriptorProperties;
 import org.apache.flink.table.descriptors.SchemaValidator;
+import org.apache.flink.table.factories.StreamTableSinkFactory;
+import org.apache.flink.table.factories.StreamTableSourceFactory;
 import org.apache.flink.table.factories.TableSinkFactory;
 import org.apache.flink.table.factories.TableSourceFactory;
+import org.apache.flink.table.sources.StreamTableSource;
+import org.apache.flink.table.utils.TableSchemaUtils;
 import org.apache.flink.types.Row;
 
 import java.util.ArrayList;
@@ -42,7 +46,7 @@ import static org.apache.flink.table.descriptors.Rowtime.*;
 import static org.apache.flink.table.descriptors.Schema.*;
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
-public class KuduTableFactory implements TableSourceFactory<Row>, TableSinkFactory<Tuple2<Boolean, Row>> {
+public class KuduTableFactory implements StreamTableSourceFactory<Row>, StreamTableSinkFactory<Tuple2<Boolean, Row>> {
 
     public static final String KUDU_TABLE = "kudu.table";
     public static final String KUDU_MASTERS = "kudu.masters";
@@ -50,6 +54,10 @@ public class KuduTableFactory implements TableSourceFactory<Row>, TableSinkFacto
     public static final String KUDU_PRIMARY_KEY_COLS = "kudu.primary-key-columns";
     public static final String KUDU_REPLICAS = "kudu.replicas";
     public static final String KUDU = "kudu";
+
+
+    public static final String CONNECTOR_LOOKUP_CACHE_MAX_ROWS = "connector.lookup.cache.max-rows";
+    public static final String CONNECTOR_LOOKUP_CACHE_TTL = "connector.lookup.cache.ttl";
 
     @Override
     public Map<String, String> requiredContext() {
@@ -70,6 +78,15 @@ public class KuduTableFactory implements TableSourceFactory<Row>, TableSinkFacto
         properties.add(SCHEMA + ".#." + SCHEMA_TYPE);
         properties.add(SCHEMA + ".#." + SCHEMA_NAME);
         properties.add(SCHEMA + ".#." + SCHEMA_FROM);
+
+        // primary-key
+        properties.add(SCHEMA + "." + PRIMARY_KEY_NAME);
+        properties.add(SCHEMA + "." + PRIMARY_KEY_COLUMNS);
+
+        // lookup
+        properties.add(CONNECTOR_LOOKUP_CACHE_MAX_ROWS);
+        properties.add(CONNECTOR_LOOKUP_CACHE_TTL);
+
         // computed column
         properties.add(SCHEMA + ".#." + EXPR);
 
@@ -101,6 +118,7 @@ public class KuduTableFactory implements TableSourceFactory<Row>, TableSinkFacto
         return descriptorProperties;
     }
 
+
     @Override
     public KuduTableSource createTableSource(ObjectPath tablePath, CatalogTable table) {
         validateTable(table);
@@ -116,7 +134,20 @@ public class KuduTableFactory implements TableSourceFactory<Row>, TableSinkFacto
         KuduReaderConfig.Builder configBuilder = KuduReaderConfig.Builder
                 .setMasters(masterAddresses);
 
-        return new KuduTableSource(configBuilder, tableInfo, physicalSchema, null, null);
+        configBuilder.setcacheMaxSize(Long.valueOf(props.get(CONNECTOR_LOOKUP_CACHE_MAX_ROWS)));
+        configBuilder.setcacheExpireMs(Long.valueOf(props.get(CONNECTOR_LOOKUP_CACHE_TTL)));
+
+        // 默认按 flink 字段查询kudu, 修复提示字段列不对等问题
+        return new KuduTableSource(configBuilder, tableInfo, physicalSchema, null, physicalSchema.getFieldNames());
+    }
+
+
+    private DescriptorProperties getValidatedProperties(Map<String, String> properties) {
+        final DescriptorProperties descriptorProperties = new DescriptorProperties(true);
+        descriptorProperties.putProperties(properties);
+        new SchemaValidator(true, false, false).validate(descriptorProperties);
+
+        return descriptorProperties;
     }
 
     @Override
