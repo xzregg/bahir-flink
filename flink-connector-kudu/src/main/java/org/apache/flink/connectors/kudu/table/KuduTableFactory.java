@@ -34,7 +34,7 @@ import org.apache.flink.table.factories.TableSourceFactory;
 import org.apache.flink.table.sources.StreamTableSource;
 import org.apache.flink.table.utils.TableSchemaUtils;
 import org.apache.flink.types.Row;
-
+import java.util.Optional;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -134,21 +134,17 @@ public class KuduTableFactory implements StreamTableSourceFactory<Row>, StreamTa
         KuduReaderConfig.Builder configBuilder = KuduReaderConfig.Builder
                 .setMasters(masterAddresses);
 
-        configBuilder.setcacheMaxSize(Long.valueOf(props.get(CONNECTOR_LOOKUP_CACHE_MAX_ROWS)));
-        configBuilder.setcacheExpireMs(Long.valueOf(props.get(CONNECTOR_LOOKUP_CACHE_TTL)));
+        final DescriptorProperties descriptorProperties = new DescriptorProperties(true);
+        descriptorProperties.putProperties(props);
+
+        descriptorProperties.getOptionalLong(CONNECTOR_LOOKUP_CACHE_MAX_ROWS).ifPresent(configBuilder::setcacheMaxSize);
+        descriptorProperties.getOptionalLong(CONNECTOR_LOOKUP_CACHE_TTL).ifPresent(configBuilder::setcacheExpireMs);
 
         // 默认按 flink 字段查询kudu, 修复提示字段列不对等问题
         return new KuduTableSource(configBuilder, tableInfo, physicalSchema, null, physicalSchema.getFieldNames());
     }
 
 
-    private DescriptorProperties getValidatedProperties(Map<String, String> properties) {
-        final DescriptorProperties descriptorProperties = new DescriptorProperties(true);
-        descriptorProperties.putProperties(properties);
-        new SchemaValidator(true, false, false).validate(descriptorProperties);
-
-        return descriptorProperties;
-    }
 
     @Override
     public KuduTableSink createTableSink(ObjectPath tablePath, CatalogTable table) {

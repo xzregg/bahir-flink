@@ -79,8 +79,8 @@ public class KuduReaderConfig implements Serializable {
         private final String masters;
         private final int rowLimit;
 
-        private long cacheMaxSize;
-        private long cacheExpireMs;
+        private long cacheMaxSize = -1L;
+        private long cacheExpireMs = -1L;
 
 
         public Builder setcacheMaxSize(long cacheMaxSize) {

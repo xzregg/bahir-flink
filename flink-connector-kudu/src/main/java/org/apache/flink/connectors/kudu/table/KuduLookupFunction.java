@@ -16,6 +16,7 @@
  */
 package org.apache.flink.connectors.kudu.table;
 
+import com.stumbleupon.async.Callback;
 import com.stumbleupon.async.Deferred;
 import org.apache.commons.collections.CollectionUtils;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
@@ -25,6 +26,7 @@ import org.apache.flink.connectors.kudu.connector.KuduTableInfo;
 import org.apache.flink.connectors.kudu.connector.reader.KuduReaderConfig;
 import org.apache.flink.shaded.guava18.com.google.common.cache.Cache;
 import org.apache.flink.shaded.guava18.com.google.common.cache.CacheBuilder;
+import org.apache.flink.shaded.guava18.com.google.common.collect.Lists;
 import org.apache.flink.table.api.TableSchema;
 import org.apache.flink.table.functions.AsyncTableFunction;
 import org.apache.flink.table.functions.FunctionContext;
@@ -34,6 +36,7 @@ import org.apache.kudu.Schema;
 import org.apache.kudu.client.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.apache.flink.types.Row;
 
 import java.util.concurrent.TimeUnit;
 
@@ -82,8 +85,6 @@ public class KuduLookupFunction extends AsyncTableFunction<Row> {
             return fieldTypes[nameList.indexOf(s)];
         })
                 .toArray(TypeInformation[]::new);
-
-
     }
 
 
@@ -94,68 +95,96 @@ public class KuduLookupFunction extends AsyncTableFunction<Row> {
         schema.getColumns().forEach(column -> {
             String name = column.getName();
             int pos = schema.getColumnIndex(name);
-            //log.info("value:" + name + "=" + row.getObject(name).toString());
-
+            //log.debug("value:" + name + "=" + row.getObject(name).toString());
             values.setField(pos, row.getObject(name));
         });
         return values;
     }
 
 
-    public void eval(CompletableFuture<Collection<Row>> future, String... keys) throws KuduException {
+    public void eval(CompletableFuture<Collection<Row>> future, Object... keys) throws KuduException {
         Row keyRow = Row.of(keys);
         try {
 
             if (cache != null) {
                 List<Row> cachedRows = cache.getIfPresent(keyRow);
                 if (cachedRows != null) {
-                    log.info("use cacne --------" + keyRow + "= " +cachedRows.size());
                     future.complete(cachedRows);
                     return;
                 }
             }
-
             AsyncKuduScanner.AsyncKuduScannerBuilder asyncKuduScannerBuilder = client.newScannerBuilder(table);
-            List<String> projectColumns = new ArrayList<>(2);
-            Schema schema = tableInfo.getSchema();
-            //log.info("add filter data ------keys.length"+ keys.length+" tableProjections:"+tableProjections.size());
+            List<String> projectColumns = new ArrayList<>();
+            //Schema schema = tableInfo.getSchema();
+            Schema schema = table.getSchema();
+            asyncKuduScannerBuilder.setProjectedColumnNames(tableProjections);
+
+            log.debug("add filter data ------keys.length" + keys.length + " tableProjections:" + tableProjections.size());
             for (int i = 0; i < keys.length; i++) {
                 ColumnSchema columnSchema = schema.getColumn(keyNames[i]);
+                String columnName = columnSchema.getName();
+                Object value = keys[i];
 
-                asyncKuduScannerBuilder.addPredicate(KuduPredicate.newInListPredicate(
-                        columnSchema, Collections.singletonList(keys[i])
-                ));
-                projectColumns.add(columnSchema.getName());
-                //log.info(columnSchema.getName() + "===" + keys[i]);
+                KuduPredicate predicate = KuduPredicate.newComparisonPredicate(
+                        columnSchema,
+                        KuduPredicate.ComparisonOp.EQUAL,
+                        value);
+                asyncKuduScannerBuilder.addPredicate(predicate);
+                projectColumns.add(columnName);
+
             }
-            //log.info("add filter end --------");
 
-            asyncKuduScannerBuilder.setProjectedColumnNames(tableProjections);
             asyncKuduScannerBuilder.limit(100);
             AsyncKuduScanner asyncKuduScanner = asyncKuduScannerBuilder.build();
-
-            //future.complete(Collections.singletonList(Row.of(key, value)));
+            List<Row> rowList = Lists.newArrayList();
             Deferred<RowResultIterator> iteratorDeferred = asyncKuduScanner.nextRows();
-
-            iteratorDeferred.addCallback(rowResults -> {
-                ArrayList<Row> rows = new ArrayList<>();
-
-                while (rowResults.hasNext()) {
-                    RowResult row = rowResults.next();
-                    rows.add(toFlinkRow(row));
-                }
-                cache.put(keyRow, rows);
-                future.complete(rows);
-
-                return null;
-            });
-
+            iteratorDeferred.addCallback(
+                    new GetListRow(
+                            cache
+                            , rowList
+                            , asyncKuduScanner
+                            , future
+                            , keyRow
+                    )
+            );
 
         } catch (Exception e) {
             log.error("get from kudu fail", e);
             throw new RuntimeException("get from kudu fail", e);
         }
 
+
+    }
+
+    private class GetListRow implements Callback<Deferred<List<Row>>, RowResultIterator> {
+        private final Cache<Row, List<Row>> cache;
+        private final List<Row> rowList;
+        private final AsyncKuduScanner asyncKuduScanner;
+        private final CompletableFuture<Collection<Row>> future;
+        private final Row keyRow;
+
+        public GetListRow(Cache<Row, List<Row>> cache, List<Row> rowList, AsyncKuduScanner asyncKuduScanner, CompletableFuture<Collection<Row>> future, Row keyRow) {
+            this.cache = cache;
+            this.rowList = rowList;
+            this.asyncKuduScanner = asyncKuduScanner;
+            this.future = future;
+            this.keyRow = keyRow;
+        }
+
+        @Override
+        public Deferred<List<Row>> call(RowResultIterator results) {
+            for (RowResult result : results) {
+                rowList.add(toFlinkRow(result));
+            };
+            if (asyncKuduScanner.hasMoreRows()) {
+                return asyncKuduScanner.nextRows().addCallbackDeferring(this);
+            }
+            if (cache != null) {
+                cache.put(keyRow, rowList);
+            }
+            future.complete(rowList);
+            return null;
+        }
 
     }
 
@@ -176,7 +205,7 @@ public class KuduLookupFunction extends AsyncTableFunction<Row> {
                     .expireAfterWrite(cacheExpireMs, TimeUnit.MILLISECONDS)
                     .maximumSize(cacheMaxSize)
                     .build();
-            log.info("cache is null ? :{}", cache == null);
+            log.info("cache is null ?:{} cacheMaxSize: {},cacheExpireMs: {}", cache == null, cacheMaxSize, cacheExpireMs);
         } catch (Exception e) {
             throw new Exception("build cache fail", e);
 
@@ -191,17 +220,13 @@ public class KuduLookupFunction extends AsyncTableFunction<Row> {
     }
 
 
-    public TypeInformation<?>[] getParameterTypes(Class<?>[] signature) {
-        return keyTypes;
-    }
-
-
     //扫尾工作，关闭连接
     @Override
     public void close() throws IOException {
         if (cache != null) {
             cache.cleanUp();
-        };
+        }
+        ;
         try {
             if (session != null) {
                 session.close();
